@@ -141,6 +141,7 @@ metadata:
 |-------|------|------|
 | [audio-download](skills/audio-download/) | 从 YouTube 和 Twitter/X 下载音频 | yt-dlp, ffmpeg |
 | [podcast-download](skills/podcast-download/) | 从 小宇宙、Apple Podcasts 和 RSS 下载播客 | feedparser, requests |
+| [pdf-to-txt](skills/pdf-to-txt/) | 将 PDF 转换为纯文本 | pymupdf4llm |
 
 ## 提交规范
 
