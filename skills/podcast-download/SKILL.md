@@ -1,156 +1,92 @@
 ---
 name: podcast-download
-description: Download podcast episodes from 小宇宙 (Xiaoyuzhou.fm), Apple Podcasts, and RSS feeds
+description: Download podcast episodes from 小宇宙 (Xiaoyuzhou.fm)
 metadata:
   openclaw:
     emoji: 🎙️
     requires:
       bins: ["python3"]
-      python_packages: ["feedparser", "requests"]
+      python_packages: ["requests"]
     install:
       - id: "pip-deps"
         kind: "pip"
-        command: "pip install feedparser requests"
-        label: "Install Python dependencies (feedparser, requests)"
+        command: "pip install requests"
+        label: "Install Python dependency (requests)"
 ---
 
 # Podcast Download Skill
 
-Download podcast episodes from multiple platforms with a unified interface.
+Download single podcast episodes from 小宇宙 (Xiaoyuzhou.fm).
 
-## Supported Platforms
+## Supported URL Format
 
-- **小宇宙 (Xiaoyuzhou.fm)**: Chinese podcast platform
-- **Apple Podcasts**: Global podcast directory
-- **Generic RSS Feeds**: Any valid podcast RSS feed
-
-## Features
-
-- Automatic platform detection from URLs
-- Episode listing without downloading
-- Selective episode download (specific episodes or latest N)
-- Metadata preservation (title, description, publish date)
-- Custom output directory and naming
-
-## URL Formats
-
-### 小宇宙 (Xiaoyuzhou.fm)
+### 小宇宙 Episode Link
 ```
-https://www.xiaoyuzhoufm.com/podcast/<podcast_id>
-https://xiaoyuzhoufm.com/podcast/<podcast_id>
+https://www.xiaoyuzhoufm.com/episode/<episode_id>
 ```
 
-### Apple Podcasts
-```
-https://podcasts.apple.com/<country>/podcast/<name>/id<podcast_id>
-https://podcasts.apple.com/podcast/<name>/id<podcast_id>
-```
+Get the episode link from the 小宇宙 app or website by clicking "分享" (Share) and copying the link.
 
-### Generic RSS Feeds
-```
-https://example.com/feed.xml
-https://example.com/podcast/rss
-```
+## Usage
 
-## Basic Usage
-
-### List Episodes (without downloading)
+### Basic Download
 
 ```bash
-# List all episodes from a podcast
-python {baseDir}/scripts/download.py "<URL>" --list
+# Download to default directory (~/Downloads)
+python {baseDir}/scripts/download.py "https://www.xiaoyuzhoufm.com/episode/<id>"
 
-# List only the latest 10 episodes
-python {baseDir}/scripts/download.py "<URL>" --list --limit 10
+# Download to custom directory
+python {baseDir}/scripts/download.py "https://www.xiaoyuzhoufm.com/episode/<id>" --output ~/Music
 ```
 
-### Download Episodes
+### Filename Template
 
 ```bash
-# Download the latest episode
-python {baseDir}/scripts/download.py "<URL>" --latest
-
-# Download the latest 5 episodes
-python {baseDir}/scripts/download.py "<URL>" --latest --limit 5
-
-# Download a specific episode by index (from --list output)
-python {baseDir}/scripts/download.py "<URL>" --episode 3
-
-# Download multiple specific episodes
-python {baseDir}/scripts/download.py "<URL>" --episode 1,3,5
-
-# Download all episodes
-python {baseDir}/scripts/download.py "<URL>" --all
-```
-
-### Output Options
-
-```bash
-# Specify output directory
-python {baseDir}/scripts/download.py "<URL>" --latest --output ~/Downloads/Podcasts
-
 # Custom filename template
-python {baseDir}/scripts/download.py "<URL>" --latest --template "{date}_{title}.{ext}"
+python {baseDir}/scripts/download.py "<URL>" --template "{podcast}_{date}_{title}.{ext}"
 ```
 
-## Examples by Platform
-
-### 小宇宙 (Xiaoyuzhou.fm)
-
-```bash
-# List episodes from a 小宇宙 podcast
-python {baseDir}/scripts/download.py "https://www.xiaoyuzhoufm.com/podcast/123456" --list
-
-# Download the latest episode
-python {baseDir}/scripts/download.py "https://www.xiaoyuzhoufm.com/podcast/123456" --latest
-```
-
-### Apple Podcasts
-
-```bash
-# List episodes from Apple Podcasts
-python {baseDir}/scripts/download.py "https://podcasts.apple.com/us/podcast/example/id123456789" --list
-
-# Download latest 3 episodes
-python {baseDir}/scripts/download.py "https://podcasts.apple.com/us/podcast/example/id123456789" --latest --limit 3
-```
-
-### Generic RSS Feed
-
-```bash
-# List episodes from RSS feed
-python {baseDir}/scripts/download.py "https://example.com/podcast/feed.xml" --list
-
-# Download all episodes
-python {baseDir}/scripts/download.py "https://example.com/podcast/feed.xml" --all
-```
-
-## Filename Template Variables
-
-Use these variables in the `--template` option:
-
+Available variables:
 - `{title}` - Episode title
 - `{date}` - Publish date (YYYYMMDD format)
-- `{podcast}` - Podcast/channel name
-- `{index}` - Episode index (001, 002, etc.)
+- `{podcast}` - Podcast name
 - `{ext}` - File extension (mp3, m4a, etc.)
 
 Default template: `{date}_{title}.{ext}`
 
+## Example
+
+```bash
+python {baseDir}/scripts/download.py "https://www.xiaoyuzhoufm.com/episode/6982c33dc78b82389298d08d"
+```
+
+Output:
+```
+🔍 Parsing episode...
+📻 播客名称 - 单集标题
+
+📥 Downloading...
+  ⬇️  Downloading: 单集标题
+     -> /Users/xxx/Downloads/20250115_单集标题.mp3
+     ✅ Complete
+
+✅ Saved to: /Users/xxx/Downloads/20250115_单集标题.mp3
+```
+
 ## Troubleshooting
 
-### "Failed to fetch RSS feed"
+### "Could not find episode data in page"
+
+- Check that the URL is a valid 小宇宙 episode link (not podcast link)
+- Episode URL format: `https://www.xiaoyuzhoufm.com/episode/<id>`
+- The page structure may have changed - try updating the script
+
+### "Could not find audio URL in episode data"
+
+- This episode may not have a downloadable audio file
+- Some premium episodes may be restricted
+
+### Download fails or is interrupted
 
 - Check your internet connection
-- For 小宇宙: RSSHub might be temporarily unavailable, try again later
-- For Apple Podcasts: Verify the podcast ID is correct
-
-### "No audio enclosure found"
-
-- The RSS feed might not contain downloadable audio files
-- Some podcasts use non-standard RSS formats
-
-### "Permission denied"
-
-- Ensure the output directory is writable
-- Try specifying a different output directory with `--output`
+- Try again - 小宇宙 servers may be temporarily unavailable
