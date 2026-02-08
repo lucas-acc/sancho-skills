@@ -8,14 +8,10 @@ metadata:
       bins: ["python3"]
       python_packages: ["feedparser", "requests"]
     install:
-      - id: "pip-feedparser"
-        kind: "uv"
-        package: "feedparser"
-        label: "Install feedparser for RSS parsing"
-      - id: "pip-requests"
-        kind: "uv"
-        package: "requests"
-        label: "Install requests for HTTP API calls"
+      - id: "pip-deps"
+        kind: "pip"
+        command: "pip install feedparser requests"
+        label: "Install Python dependencies (feedparser, requests)"
 ---
 
 # Podcast Download Skill

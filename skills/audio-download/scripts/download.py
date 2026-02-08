@@ -114,6 +114,7 @@ def run_download(cmd: list[str]) -> bool:
             "Error: yt-dlp not found. Please install it:\n"
             "  brew install yt-dlp\n"
             "  or\n"
+            "  conda activate default\n"
             "  pip install yt-dlp",
             file=sys.stderr,
         )

@@ -116,6 +116,25 @@ metadata:
 - `npm` - Node.js 包
 - `apt` - Debian/Ubuntu 包
 
+### Python 环境规范
+
+所有 Python 相关操作统一使用 conda 环境：
+
+1. **激活环境**: 使用 `conda activate default` 激活默认环境
+2. **安装依赖**: 使用 `pip install <package>` 安装 Python 包
+
+在 SKILL.md 的 `install` 配置中：
+
+```yaml
+metadata:
+  openclaw:
+    install:
+      - id: "pip-install"
+        kind: "pip"
+        command: "pip install feedparser requests"
+        label: "通过 pip 安装 Python 依赖"
+```
+
 ## 现有 Skills
 
 | Skill | 描述 | 依赖 |

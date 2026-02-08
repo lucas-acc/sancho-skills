@@ -13,8 +13,8 @@ metadata:
         bins: ["yt-dlp"]
         label: "Install yt-dlp (brew)"
       - id: "pip-yt-dlp"
-        kind: "uv"
-        package: "yt-dlp"
+        kind: "pip"
+        command: "pip install yt-dlp"
         bins: ["yt-dlp"]
         label: "Install yt-dlp (pip)"
       - id: "brew-ffmpeg"
@@ -125,7 +125,8 @@ If downloads fail, update yt-dlp to the latest version:
 # If installed via brew
 brew upgrade yt-dlp
 
-# If installed via pip
+# If installed via pip (ensure conda environment is activated)
+conda activate default
 pip install -U yt-dlp
 ```
 
