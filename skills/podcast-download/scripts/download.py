@@ -8,7 +8,8 @@ Usage:
 
 Examples:
     python download.py "https://www.xiaoyuzhoufm.com/episode/6982c33dc78b82389298d08d"
-    python download.py "https://www.xiaoyuzhoufm.com/episode/6982c33dc78b82389298d08d" --output ~/Downloads
+    python download.py "https://podcasts.apple.com/podcast/id360084272?i=1000748569801"
+    python download.py "<URL>" --output ~/Downloads
 """
 
 import argparse
@@ -19,10 +20,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import json
 import requests
+
+# Optional import for RSS feeds
+try:
+    import feedparser
+    HAS_FEEDPARSER = True
+except ImportError:
+    HAS_FEEDPARSER = False
 
 
 @dataclass
@@ -63,6 +71,254 @@ def is_xiaoyuzhou_episode_url(url: str) -> bool:
         return False
 
     return re.match(r'^/episode/([^/]+)/?$', parsed.path) is not None
+
+
+def is_apple_podcasts_episode_url(url: str) -> bool:
+    """
+    Check if URL is an Apple Podcasts episode link.
+
+    Supported patterns:
+    - https://podcasts.apple.com/podcast/id<podcast_id>?i=<episode_id>
+    - https://podcasts.apple.com/<country>/podcast/<name>/id<podcast_id>?i=<episode_id>
+    """
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+
+    if domain not in ("podcasts.apple.com", "www.podcasts.apple.com"):
+        return False
+
+    # Check for episode ID in query params
+    query = parse_qs(parsed.query)
+    if 'i' not in query:
+        return False
+
+    # Check for podcast ID in path
+    return '/id' in parsed.path and re.search(r'id\d+', parsed.path) is not None
+
+
+def extract_apple_podcast_info(url: str) -> tuple:
+    """
+    Extract podcast ID and episode ID from Apple Podcasts URL.
+
+    Returns (podcast_id, episode_id)
+    """
+    parsed = urlparse(url)
+
+    # Extract podcast ID from path
+    match = re.search(r'id(\d+)', parsed.path)
+    if not match:
+        raise ValueError(f"Could not extract podcast ID from URL: {url}")
+    podcast_id = match.group(1)
+
+    # Extract episode ID from query
+    query = parse_qs(parsed.query)
+    if 'i' not in query:
+        raise ValueError(f"Could not extract episode ID from URL: {url}")
+    episode_id = query['i'][0]
+
+    return podcast_id, episode_id
+
+
+def get_apple_podcast_rss_feed(podcast_id: str) -> str:
+    """
+    Get RSS feed URL from Apple Podcasts using iTunes Lookup API.
+    """
+    api_url = f"https://itunes.apple.com/lookup?id={podcast_id}&entity=podcast"
+
+    try:
+        response = requests.get(api_url, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("resultCount", 0) == 0:
+            raise ValueError(f"Podcast not found: {podcast_id}")
+
+        results = data.get("results", [])
+        if not results:
+            raise ValueError(f"No results for podcast: {podcast_id}")
+
+        feed_url = results[0].get("feedUrl")
+        if not feed_url:
+            raise ValueError(f"No feed URL found for podcast: {podcast_id}")
+
+        return feed_url
+
+    except requests.RequestException as e:
+        raise ConnectionError(f"Failed to fetch from iTunes API: {e}")
+
+
+def get_episode_title_from_apple_page(url: str) -> tuple:
+    """
+    Extract episode title and podcast name from Apple Podcasts page.
+
+    Returns (title, podcast_name)
+    """
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        html = response.text
+
+        # Extract title from <title> tag
+        # Format: "Episode Title - Podcast Name - Apple Podcasts"
+        title_match = re.search(r'<title>([^<]+)</title>', html)
+        if title_match:
+            full_title = title_match.group(1).strip()
+            # Remove " - Apple Podcasts" suffix
+            full_title = re.sub(r'\s+-\s+Apple Podcasts$', '', full_title)
+
+            # Try to split into episode title and podcast name
+            parts = full_title.rsplit(' - ', 1)
+            if len(parts) == 2:
+                episode_title, podcast_name = parts
+                return episode_title.strip(), podcast_name.strip()
+            else:
+                return full_title, ""
+
+        raise ValueError("Could not extract title from page")
+
+    except requests.RequestException as e:
+        raise ConnectionError(f"Failed to fetch Apple Podcasts page: {e}")
+
+
+def parse_rss_feed_for_episode(feed_url: str, target_title: str) -> Optional[Episode]:
+    """
+    Parse RSS feed and find episode matching the target title.
+    """
+    if not HAS_FEEDPARSER:
+        raise ImportError("feedparser is required for Apple Podcasts. Install with: pip install feedparser")
+
+    try:
+        feed = feedparser.parse(feed_url)
+
+        if not feed.entries:
+            raise ValueError("No episodes found in RSS feed")
+
+        podcast_name = feed.feed.get("title", "Unknown Podcast")
+
+        # Try exact match first
+        for entry in feed.entries:
+            title = entry.get("title", "")
+            if title == target_title:
+                return _entry_to_episode(entry, podcast_name)
+
+        # Try case-insensitive match
+        target_lower = target_title.lower()
+        for entry in feed.entries:
+            title = entry.get("title", "")
+            if title.lower() == target_lower:
+                return _entry_to_episode(entry, podcast_name)
+
+        # Try partial match (target title contained in entry title)
+        for entry in feed.entries:
+            title = entry.get("title", "")
+            if target_lower in title.lower():
+                return _entry_to_episode(entry, podcast_name)
+
+        # Try the reverse (entry title contained in target)
+        for entry in feed.entries:
+            title = entry.get("title", "")
+            if title.lower() in target_lower:
+                return _entry_to_episode(entry, podcast_name)
+
+        raise ValueError(f"Could not find episode with title: {target_title}")
+
+    except Exception as e:
+        raise ValueError(f"Failed to parse RSS feed: {e}")
+
+
+def _entry_to_episode(entry, podcast_name: str) -> Episode:
+    """Convert a feedparser entry to Episode object."""
+    title = entry.get("title", "Untitled")
+
+    # Get audio URL from enclosures
+    audio_url = None
+    file_size = None
+    if entry.enclosures:
+        for enc in entry.enclosures:
+            enc_type = enc.get("type", "")
+            enc_url = enc.get("href", "")
+            if enc_type.startswith("audio/") or enc_url.endswith((".mp3", ".m4a", ".aac", ".ogg")):
+                audio_url = enc_url
+                file_size = enc.get("length")
+                break
+
+    if not audio_url and entry.enclosures:
+        # Take first enclosure if no audio type found
+        audio_url = entry.enclosures[0].get("href", "")
+        file_size = entry.enclosures[0].get("length")
+
+    if not audio_url:
+        raise ValueError(f"No audio URL found for episode: {title}")
+
+    # Parse date
+    pub_date = entry.get("published", entry.get("updated", ""))
+    try:
+        # Try common RSS date formats
+        from time import mktime
+        import time
+        if hasattr(entry, 'published_parsed') and entry.published_parsed:
+            published = datetime.fromtimestamp(mktime(entry.published_parsed))
+        else:
+            # Try parsing the date string
+            try:
+                published = datetime.strptime(pub_date[:25], "%a, %d %b %Y %H:%M:%S")
+            except:
+                published = datetime.now()
+    except:
+        published = datetime.now()
+
+    # Description
+    description = entry.get("description", entry.get("summary", ""))
+
+    # Duration
+    duration = entry.get("itunes_duration", "")
+
+    return Episode(
+        title=title,
+        description=description,
+        published=published,
+        audio_url=audio_url,
+        podcast_name=podcast_name,
+        duration=duration,
+        file_size=int(file_size) if file_size else None
+    )
+
+
+def parse_apple_podcasts_episode(url: str) -> Episode:
+    """
+    Parse Apple Podcasts episode page to extract audio URL.
+
+    Process:
+    1. Extract podcast ID and episode ID from URL
+    2. Get RSS feed URL from iTunes API
+    3. Extract episode title from Apple Podcasts page
+    4. Find matching episode in RSS feed
+    """
+    try:
+        # Extract IDs
+        podcast_id, episode_id = extract_apple_podcast_info(url)
+
+        # Get RSS feed URL
+        print(f"   Fetching podcast feed...")
+        feed_url = get_apple_podcast_rss_feed(podcast_id)
+
+        # Get episode title from Apple page
+        print(f"   Extracting episode info...")
+        title, _ = get_episode_title_from_apple_page(url)
+
+        # Find episode in RSS feed
+        print(f"   Searching for: {title}")
+        episode = parse_rss_feed_for_episode(feed_url, title)
+
+        return episode
+
+    except requests.RequestException as e:
+        raise ConnectionError(f"Failed to fetch Apple Podcasts data: {e}")
+    except Exception as e:
+        raise ValueError(f"Failed to parse Apple Podcasts episode: {e}")
 
 
 def extract_json_from_html(html: str, key: str) -> dict:
@@ -233,27 +489,47 @@ def download_episode(episode: Episode, output_dir: Path, template: str = "{date}
         raise RuntimeError(f"Download failed: {e}")
 
 
+def detect_platform(url: str) -> str:
+    """Detect the platform from the URL."""
+    if is_xiaoyuzhou_episode_url(url):
+        return "xiaoyuzhou"
+    elif is_apple_podcasts_episode_url(url):
+        return "apple"
+    else:
+        return "unknown"
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Download podcast episode from 小宇宙 (Xiaoyuzhou.fm)"
+        description="Download podcast episode from 小宇宙 (Xiaoyuzhou.fm) or Apple Podcasts"
     )
-    parser.add_argument("url", help="Episode URL (e.g., https://www.xiaoyuzhoufm.com/episode/<id>)")
+    parser.add_argument("url", help="Episode URL (e.g., https://www.xiaoyuzhoufm.com/episode/<id> or https://podcasts.apple.com/...)")
     parser.add_argument("-o", "--output", type=Path, default=Path.home() / "Downloads", help="Output directory (default: ~/Downloads)")
     parser.add_argument("--template", type=str, default="{date}_{title}.{ext}", help="Filename template")
 
     args = parser.parse_args()
 
     try:
-        if not is_xiaoyuzhou_episode_url(args.url):
-            print(f"Error: URL does not appear to be a 小宇宙 episode link", file=sys.stderr)
-            print(f"Expected format: https://www.xiaoyuzhoufm.com/episode/<id>", file=sys.stderr)
+        platform = detect_platform(args.url)
+
+        if platform == "xiaoyuzhou":
+            print(f"🔍 Platform: 小宇宙 (Xiaoyuzhou.fm)")
+            print(f"📥 Parsing episode...")
+            episode = parse_xiaoyuzhou_episode(args.url)
+        elif platform == "apple":
+            print(f"🔍 Platform: Apple Podcasts")
+            print(f"📥 Resolving episode...")
+            episode = parse_apple_podcasts_episode(args.url)
+        else:
+            print(f"Error: Unsupported URL format", file=sys.stderr)
+            print(f"Supported platforms:", file=sys.stderr)
+            print(f"  - 小宇宙: https://www.xiaoyuzhoufm.com/episode/<id>", file=sys.stderr)
+            print(f"  - Apple Podcasts: https://podcasts.apple.com/...?i=<episode_id>", file=sys.stderr)
             return 1
 
-        print(f"🔍 Parsing episode...")
-        episode = parse_xiaoyuzhou_episode(args.url)
         print(f"📻 {episode.podcast_name} - {episode.title}")
 
-        print(f"\n📥 Downloading...")
+        print(f"\n⬇️  Downloading...")
         output_path = download_episode(episode, args.output, args.template)
 
         print(f"\n✅ Saved to: {output_path}")
@@ -263,6 +539,9 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except ImportError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
