@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Audio transcription script with chunking and resume support.
-Uses faster-whisper for efficient transcription with automatic language detection.
+Uses mlx-whisper for efficient transcription with automatic language detection.
+Optimized for Apple Silicon.
 """
 
 from __future__ import annotations
@@ -14,13 +15,12 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-# faster-whisper import
+# mlx-whisper import
 try:
-    from faster_whisper import WhisperModel
-    HAS_FASTER_WHISPER = True
+    import mlx_whisper
+    HAS_MLX_WHISPER = True
 except ImportError:
-    HAS_FASTER_WHISPER = False
-    WhisperModel = Any
+    HAS_MLX_WHISPER = False
 
 
 class ProgressTracker:
@@ -33,7 +33,7 @@ class ProgressTracker:
     def _load(self) -> dict:
         if self.progress_file.exists():
             return json.loads(self.progress_file.read_text())
-        return {"completed_chunks": [], "language": None}
+        return {"completed_chunks": [], "language": None, "segments": []}
 
     def save(self):
         self.progress_file.write_text(json.dumps(self.data))
@@ -41,9 +41,10 @@ class ProgressTracker:
     def is_chunk_completed(self, chunk_idx: int) -> bool:
         return chunk_idx in self.data["completed_chunks"]
 
-    def mark_chunk_completed(self, chunk_idx: int):
+    def mark_chunk_completed(self, chunk_idx: int, segments: list):
         if chunk_idx not in self.data["completed_chunks"]:
             self.data["completed_chunks"].append(chunk_idx)
+            self.data["segments"].extend(segments)
         self.save()
 
     def get_detected_language(self) -> Optional[str]:
@@ -52,6 +53,9 @@ class ProgressTracker:
     def set_detected_language(self, lang: str):
         self.data["language"] = lang
         self.save()
+
+    def get_segments(self) -> list:
+        return self.data.get("segments", [])
 
     def cleanup(self):
         if self.progress_file.exists():
@@ -95,28 +99,41 @@ def split_audio(audio_path: Path, chunk_minutes: int, temp_dir: Path) -> list[Pa
     return chunks
 
 
+# Model mapping for mlx-whisper
+MLX_MODEL_MAP = {
+    "tiny": "mlx-community/whisper-tiny-mlx",
+    "base": "mlx-community/whisper-base-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "large-v3": "mlx-community/whisper-large-v3-mlx"
+}
+
+
 def transcribe_chunk(
-    model: WhisperModel,
     chunk_path: Path,
+    model_name: str,
     language: Optional[str] = None
 ) -> tuple[list[dict], Optional[str]]:
-    """Transcribe a single audio chunk."""
-    segments, info = model.transcribe(
+    """Transcribe a single audio chunk using mlx-whisper."""
+    mlx_model = MLX_MODEL_MAP.get(model_name, model_name)
+
+    result = mlx_whisper.transcribe(
         str(chunk_path),
+        path_or_hf_repo=mlx_model,
         language=language,
-        task="transcribe",
-        vad_filter=True
+        task="transcribe"
     )
 
+    segments = result.get("segments", [])
     results = []
-    for segment in segments:
+    for seg in segments:
         results.append({
-            "start": segment.start,
-            "end": segment.end,
-            "text": segment.text.strip()
+            "start": seg.get("start", 0),
+            "end": seg.get("end", 0),
+            "text": seg.get("text", "").strip()
         })
 
-    detected_lang = info.language if info else None
+    detected_lang = result.get("language")
     return results, detected_lang
 
 
@@ -151,7 +168,7 @@ def write_output(segments: list[dict], output_path: Path, format_type: str, lang
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Transcribe audio to text")
+    parser = argparse.ArgumentParser(description="Transcribe audio to text using mlx-whisper")
     parser.add_argument("audio_file", type=Path, help="Audio file to transcribe")
     parser.add_argument("-o", "--output", type=Path, help="Output file path")
     parser.add_argument("--model", default="small", choices=["tiny", "base", "small", "medium", "large-v3"])
@@ -161,17 +178,13 @@ def main():
 
     args = parser.parse_args()
 
-    if not HAS_FASTER_WHISPER:
-        print("Error: faster-whisper is required. Install with: pip install faster-whisper", file=sys.stderr)
+    if not HAS_MLX_WHISPER:
+        print("Error: mlx-whisper is required. Install with: pip install mlx-whisper", file=sys.stderr)
         return 1
 
     if not args.audio_file.exists():
         print(f"Error: Audio file not found: {args.audio_file}", file=sys.stderr)
         return 1
-
-    # Initialize model
-    print(f"Loading Whisper model: {args.model}")
-    model = WhisperModel(args.model, device="auto", compute_type="auto")
 
     # Setup progress tracker
     tracker = ProgressTracker(args.audio_file)
@@ -190,7 +203,8 @@ def main():
         if duration <= chunk_seconds:
             # Short audio, transcribe directly
             print(f"Audio duration: {duration/60:.1f} minutes, transcribing directly...")
-            segments, lang = transcribe_chunk(model, args.audio_file, detected_lang)
+            print(f"Using model: {args.model} (mlx-whisper)")
+            segments, lang = transcribe_chunk(args.audio_file, args.model, detected_lang)
             if lang:
                 detected_lang = lang
         else:
@@ -198,17 +212,19 @@ def main():
             print(f"Audio duration: {duration/60:.1f} minutes, splitting into chunks...")
             chunks = split_audio(args.audio_file, args.chunk_minutes, temp_path)
             print(f"Split into {len(chunks)} chunks")
+            print(f"Using model: {args.model} (mlx-whisper)")
 
             all_segments = []
 
             for i, chunk_path in enumerate(chunks):
                 if tracker.is_chunk_completed(i):
                     print(f"Chunk {i+1}/{len(chunks)}: Already completed, skipping")
+                    # Load saved segments from progress
                     continue
 
                 print(f"Chunk {i+1}/{len(chunks)}: Transcribing...", end=" ", flush=True)
                 try:
-                    segments, lang = transcribe_chunk(model, chunk_path, detected_lang)
+                    segments, lang = transcribe_chunk(chunk_path, args.model, detected_lang)
 
                     # Detect language from first chunk if not specified
                     if i == 0 and lang and not detected_lang:
@@ -223,13 +239,17 @@ def main():
                         seg["end"] += offset
 
                     all_segments.extend(segments)
-                    tracker.mark_chunk_completed(i)
+                    tracker.mark_chunk_completed(i, segments)
                     print(f"✓ ({len(segments)} segments)")
                 except Exception as e:
                     print(f"✗ Error: {e}")
                     print(f"\nProgress saved. To resume, run the command again.", file=sys.stderr)
                     return 1
 
+            # Load previously completed segments from tracker
+            saved_segments = tracker.get_segments()
+            if saved_segments:
+                all_segments = saved_segments + all_segments
             segments = all_segments
 
         # Determine output path
