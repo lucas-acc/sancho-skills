@@ -159,6 +159,11 @@ def get_episode_title_from_apple_page(url: str) -> tuple:
         }
         response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
+
+        # Fix encoding: Apple may not set charset properly, use apparent_encoding
+        if response.encoding.lower() == 'iso-8859-1':
+            response.encoding = response.apparent_encoding
+
         html = response.text
 
         # Extract title from <title> tag
@@ -186,6 +191,8 @@ def get_episode_title_from_apple_page(url: str) -> tuple:
 def parse_rss_feed_for_episode(feed_url: str, target_title: str) -> Optional[Episode]:
     """
     Parse RSS feed and find episode matching the target title.
+
+    Handles truncated titles from Apple Podcasts pages by cleaning up '...' suffixes.
     """
     if not HAS_FEEDPARSER:
         raise ImportError("feedparser is required for Apple Podcasts. Install with: pip install feedparser")
@@ -197,6 +204,15 @@ def parse_rss_feed_for_episode(feed_url: str, target_title: str) -> Optional[Epi
             raise ValueError("No episodes found in RSS feed")
 
         podcast_name = feed.feed.get("title", "Unknown Podcast")
+
+        # Clean up target title (remove truncation markers and suffixes)
+        # Apple Podcasts pages often truncate titles with "..." and append " - Podcast Name"
+        cleaned_target = target_title
+        # Remove trailing " - Podcast Name" suffix if present
+        if " - " in cleaned_target:
+            cleaned_target = cleaned_target.rsplit(" - ", 1)[0]
+        # Remove "..." truncation marker
+        cleaned_target = cleaned_target.replace("...", "").strip()
 
         # Try exact match first
         for entry in feed.entries:
@@ -211,17 +227,40 @@ def parse_rss_feed_for_episode(feed_url: str, target_title: str) -> Optional[Epi
             if title.lower() == target_lower:
                 return _entry_to_episode(entry, podcast_name)
 
-        # Try partial match (target title contained in entry title)
+        # Try partial match with cleaned title (handle truncation)
+        cleaned_target_lower = cleaned_target.lower()
         for entry in feed.entries:
             title = entry.get("title", "")
-            if target_lower in title.lower():
+            title_lower = title.lower()
+            # Check if cleaned target is contained in RSS title
+            if cleaned_target_lower in title_lower:
+                return _entry_to_episode(entry, podcast_name)
+            # Check if RSS title is contained in cleaned target
+            if title_lower in cleaned_target_lower:
                 return _entry_to_episode(entry, podcast_name)
 
-        # Try the reverse (entry title contained in target)
+        # Try fuzzy matching: find the entry with highest similarity to cleaned target
+        best_match = None
+        best_score = 0
         for entry in feed.entries:
             title = entry.get("title", "")
-            if title.lower() in target_lower:
-                return _entry_to_episode(entry, podcast_name)
+            # Simple similarity: length of common prefix
+            title_lower = title.lower()
+            min_len = min(len(cleaned_target_lower), len(title_lower))
+            common_len = 0
+            for i in range(min_len):
+                if cleaned_target_lower[i] == title_lower[i]:
+                    common_len += 1
+                else:
+                    break
+            # Score based on common prefix ratio
+            score = common_len / max(len(cleaned_target_lower), len(title_lower))
+            if score > best_score and score > 0.5:  # At least 50% match
+                best_score = score
+                best_match = entry
+
+        if best_match:
+            return _entry_to_episode(best_match, podcast_name)
 
         raise ValueError(f"Could not find episode with title: {target_title}")
 
